@@ -17,7 +17,22 @@ function! ember_tools#Init()
   endif
 
   setlocal includeexpr=ember_tools#Includeexpr()
-  command! -count=0 -nargs=1 -buffer Extract call ember_tools#extract#Run(<line1>, <line2>, <f-args>)
+
+  if ember_tools#IsTemplateFiletype()
+    command! -count=0 -nargs=1 -buffer
+          \ Extract call ember_tools#extract#Run(<line1>, <line2>, <f-args>)
+  endif
+
+  if &filetype is 'javascript'
+    command! -buffer
+          \ Unpack call ember_tools#unpack#Run()
+    command! -buffer
+          \ Inline call ember_tools#unpack#Reverse()
+    command! -buffer -nargs=* -complete=custom,s:CompleteServices
+          \ Inject call ember_tools#inject#Run(<f-args>)
+
+    call s:DefineJavascriptAutocommands()
+  end
 endfunction
 
 function! ember_tools#Includeexpr()
@@ -32,10 +47,16 @@ function! ember_tools#Includeexpr()
         \ 'ember_tools#gf#TransitionRoute',
         \ 'ember_tools#gf#Controller',
         \ 'ember_tools#gf#Action',
-        \ 'ember_tools#gf#ServiceInjection',
-        \ 'ember_tools#gf#ServiceProperty',
+        \ 'ember_tools#gf#Property',
+        \ 'ember_tools#gf#RenderCall',
+        \ 'ember_tools#gf#ExplicitTemplateName',
+        \ 'ember_tools#gf#ExplicitControllerName',
+        \ 'ember_tools#gf#Injection',
+        \ 'ember_tools#gf#InjectedProperty',
         \ 'ember_tools#gf#Model',
+        \ 'ember_tools#gf#TemplatePartial',
         \ 'ember_tools#gf#TemplateComponent',
+        \ 'ember_tools#gf#ImportedVariable',
         \ 'ember_tools#gf#Import',
         \ ])
 
@@ -79,18 +100,16 @@ endfunction
 
 function! ember_tools#SetFileOpenCallback(filename, ...)
   let searches = a:000
+  let filename = fnamemodify(a:filename, ':p')
 
   augroup ember_tools_file_open_callback
     autocmd!
 
-    echomsg 'autocmd BufEnter '.a:filename.' normal! gg'
-    exe 'autocmd BufEnter '.a:filename.' normal! gg'
+    exe 'autocmd BufEnter '.filename.' normal! gg'
     for pattern in searches
-      echomsg 'autocmd BufEnter '.a:filename.' call search("'.escape(pattern, '"\').'")'
-      exe 'autocmd BufEnter '.a:filename.' call search("'.escape(pattern, '"\').'")'
+      exe 'autocmd BufEnter '.filename.' call search("'.escape(pattern, '"\').'")'
     endfor
-    echomsg 'autocmd BufEnter '.a:filename.' call ember_tools#ClearFileOpenCallback()'
-    exe 'autocmd BufEnter '.a:filename.' call ember_tools#ClearFileOpenCallback()'
+    exe 'autocmd BufEnter '.filename.' call ember_tools#ClearFileOpenCallback()'
   augroup END
 endfunction
 
@@ -145,15 +164,96 @@ function! ember_tools#LogicExtension()
 endfunction
 
 function! ember_tools#ExistingTemplateFile(file_prefix)
-  let file_prefix = a:file_prefix
-  if ember_tools#util#Filereadable(file_prefix.'.emblem') | return file_prefix.'.emblem' | endif
-  if ember_tools#util#Filereadable(file_prefix.'.hbs')    | return file_prefix.'.hbs'    | endif
+  for file_prefix in s:EnumerateBasenameFormats(a:file_prefix)
+    if ember_tools#util#Filereadable(file_prefix.'.hbs')    | return file_prefix.'.hbs'    | endif
+    if ember_tools#util#Filereadable(file_prefix.'.emblem') | return file_prefix.'.emblem' | endif
+  endfor
+
   return ''
 endfunction
 
 function! ember_tools#ExistingLogicFile(file_prefix)
-  let file_prefix = a:file_prefix
-  if ember_tools#util#Filereadable(file_prefix.'.coffee') | return file_prefix.'.coffee' | endif
-  if ember_tools#util#Filereadable(file_prefix.'.js')     | return file_prefix.'.js'     | endif
+  for file_prefix in s:EnumerateBasenameFormats(a:file_prefix)
+    if ember_tools#util#Filereadable(file_prefix.'.js')     | return file_prefix.'.js'     | endif
+    if ember_tools#util#Filereadable(file_prefix.'.coffee') | return file_prefix.'.coffee' | endif
+  endfor
+
   return ''
+endfunction
+
+function! s:DefineJavascriptAutocommands()
+  if g:ember_tools_highlight_actions
+    " Define what color the private area will be
+    hi def emberAction cterm=underline gui=underline
+
+    augroup ember_tools_actions_highlight
+      autocmd!
+
+      if index(g:ember_tools_highlight_actions_on, 'init') >= 0
+        " Initial marking
+        autocmd BufEnter <buffer> call ember_tools#syntax#MarkPrivateArea()
+      endif
+
+      if index(g:ember_tools_highlight_actions_on, 'write') >= 0
+        " Mark upon writing
+        autocmd BufWrite <buffer> call ember_tools#syntax#MarkPrivateArea()
+      endif
+
+      if index(g:ember_tools_highlight_actions_on, 'insert-leave') >= 0
+        " Mark when exiting insert mode (doesn't cover normal-mode text changing)
+        autocmd InsertLeave <buffer> call ember_tools#syntax#MarkPrivateArea()
+      endif
+
+      if index(g:ember_tools_highlight_actions_on, 'normal-text-changed') >= 0
+        " Mark when text has changed in normal mode
+        autocmd TextChanged <buffer> call ember_tools#syntax#MarkPrivateArea()
+      endif
+
+      if index(g:ember_tools_highlight_actions_on, 'cursor-hold') >= 0
+        " Mark when not moving the cursor for 'timeoutlen' time
+        autocmd CursorHold <buffer> call ember_tools#syntax#MarkPrivateArea()
+      endif
+    augroup END
+  endif
+endfunction
+
+function! s:EnumerateBasenameFormats(filename)
+  if a:filename !~ '/'
+    let path = ''
+    let basename = a:filename
+  else
+    let [path, basename] = split(a:filename, '^.*\zs/\ze.*$')
+    let path .= '/'
+  endif
+
+  if basename =~ '_'
+    " it's underscored:
+    let underscored = basename
+    let camelcased = ember_tools#util#CamelCase(basename)
+    let dasherized = ember_tools#util#Dasherize(camelcased)
+  elseif basename =~ '-'
+    let dasherized = basename
+    let underscored = substitute(basename, '-', '_', 'g')
+    let camelcased = ember_tools#util#CamelCase(underscored)
+  elseif basename =~# '\u'
+    let camelcased = basename
+    let underscored = ember_tools#util#Underscore(camelcased)
+    let dasherized = ember_tools#util#Dasherize(camelcased)
+  else
+    " doesn't look like anything special, just use that one
+    return [a:filename]
+  endif
+
+  return [
+        \ path.dasherized, path.underscored, path.camelcased,
+        \ path.'-'.dasherized, path.'_'.underscored,
+        \ ]
+endfunction
+
+function! s:CompleteServices(argument_lead, command_line, cursor_position)
+  let files     = glob(b:ember_root.'/app/services/**/*.js', 0, 1)
+  let basenames = map(files, 'substitute(v:val, b:ember_root."/app/services/", "", "")')
+  let names     = map(basenames, 'substitute(v:val, ".js$", "", "")')
+
+  return join(sort(names), "\n")
 endfunction

@@ -1,13 +1,43 @@
 require 'spec_helper'
+require 'json'
 
 describe "gf mapping" do
   describe "javascript/handlebars" do
-    specify "finding an import" do
+    specify "finding a relative import" do
       touch_file 'app/stuff.js'
       edit_file 'app/foo/bar/baz.js', <<-EOF
         import stuff from '../../stuff';
       EOF
       vim.search 'stuff\''
+
+      vim.normal 'gf'
+
+      expect(current_file).to eq 'app/stuff.js'
+    end
+
+    specify "finding an app-relative import" do
+      pending "Doesn't seem to work on TravisCI for some reason"
+
+      write_file 'package.json', JSON.dump({'name' => 'appname'})
+      touch_file 'app/stuff.js'
+      edit_file 'app/foo/bar/baz.js', <<-EOF
+        import stuff from 'appname/stuff';
+      EOF
+      vim.search 'stuff\''
+
+      vim.normal 'gf'
+
+      expect(current_file).to eq 'app/stuff.js'
+    end
+
+    specify "following an imported variable's source" do
+      touch_file 'app/stuff.js'
+      edit_file 'app/foo/bar/baz.js', <<-EOF
+        import Whatever from '../../stuff';
+
+        export default Whatever.extend({});
+      EOF
+      vim.search 'export default \zsWhatever'
 
       vim.normal 'gf'
 
@@ -102,6 +132,18 @@ describe "gf mapping" do
       expect(current_file).to eq 'app/pods/foo/bar/controller.js'
     end
 
+    specify "finding a partial template" do
+      touch_file 'app/templates/partials/foo-bar/baz.hbs'
+      edit_file 'app/templates/example.hbs', <<-EOF
+        {{partial "partials/foo-bar/baz"}}
+      EOF
+      vim.search 'partial'
+
+      vim.normal 'gf'
+
+      expect(current_file).to eq 'app/templates/partials/foo-bar/baz.hbs'
+    end
+
     specify "finding a component" do
       touch_file 'app/components/foo/bar-baz/template.hbs'
       edit_file 'app/templates/example.hbs', <<-EOF
@@ -142,6 +184,36 @@ describe "gf mapping" do
       vim.normal 'gf'
 
       expect(current_file).to eq 'app/pods/foo/bar-baz/template.hbs'
+    end
+
+    specify "finding a component without a template file within a pod structure" do
+      touch_file 'app/pods/foo/bar-baz/component.js'
+      edit_file 'app/templates/example.hbs', <<-EOF
+        <p>
+          {{foo/bar-baz param1=something}}
+        </p>
+      EOF
+      vim.search 'foo/bar-baz'
+
+      vim.normal 'gf'
+
+      expect(current_file).to eq 'app/pods/foo/bar-baz/component.js'
+    end
+
+    specify "finding a component with block expression" do
+      touch_file 'app/components/foo/bar-baz/template.hbs'
+      edit_file 'app/templates/example.hbs', <<-EOF
+      <p>
+        {{#foo/bar-baz param1=something}}
+          <p>Foo Bar</p>
+        {{/foo/bar-baz}}
+      </p>
+      EOF
+      vim.search 'foo/bar-baz'
+
+      vim.normal 'gf'
+
+      expect(current_file).to eq 'app/components/foo/bar-baz/template.hbs'
     end
 
     specify "finding a controller action" do
@@ -190,7 +262,103 @@ describe "gf mapping" do
       expect(current_line.strip).to eq 'exampleAction() {'
     end
 
-    describe "finding a service" do
+    specify "finding a controller property" do
+      edit_file 'app/controllers/foo.js', <<-EOF
+        export default Ember.Controller.extend({
+          showSomething: true
+        });
+      EOF
+      edit_file 'app/templates/foo.hbs', <<-EOF
+        {{#if showSomething}}
+          <div>Something</div>
+        {{/if}}
+      EOF
+      vim.search 'showSomething'
+
+      vim.normal 'gf'
+
+      expect(current_file).to eq 'app/controllers/foo.js'
+      expect(current_line.strip).to eq 'showSomething: true'
+    end
+
+    specify "finding a component property" do
+      edit_file 'app/components/foo/bar-baz/component.js', <<-EOF
+        export default Ember.Component.extend({
+          showSomething: true
+        });
+      EOF
+      edit_file 'app/components/foo/bar-baz/template.hbs', <<-EOF
+        {{#if showSomething}}
+          <div>Something</div>
+        {{/if}}
+      EOF
+      vim.search 'showSomething'
+
+      vim.normal 'gf'
+
+      expect(current_file).to eq 'app/components/foo/bar-baz/component.js'
+      expect(current_line.strip).to eq 'showSomething: true'
+    end
+
+    specify "finding a template from its render call" do
+      touch_file 'app/templates/some/other/template.hbs'
+      edit_file 'app/controllers/foo.js', <<-EOF
+        export default Ember.Controller.extend({
+          renderTemplate() {
+            this.render('some/other/template');
+          }
+        });
+      EOF
+      vim.search 'this.render'
+
+      vim.normal 'gf'
+
+      expect(current_file).to eq 'app/templates/some/other/template.hbs'
+    end
+
+    specify "finding an explicit layoutName" do
+      touch_file 'app/templates/some/template/name.hbs'
+      edit_file 'app/controllers/example.js', <<-EOF
+        export default Ember.Controller.extend({
+          layoutName: 'some/template/name'
+        });
+      EOF
+      vim.search 'layoutName'
+
+      vim.normal 'gf'
+
+      expect(current_file).to eq 'app/templates/some/template/name.hbs'
+    end
+
+    specify "finding an explicit templateName" do
+      touch_file 'app/templates/some/template/name.hbs'
+      edit_file 'app/controllers/example.js', <<-EOF
+        export default Ember.Controller.extend({
+          templateName: 'some/template/name'
+        });
+      EOF
+      vim.search 'templateName'
+
+      vim.normal 'gf'
+
+      expect(current_file).to eq 'app/templates/some/template/name.hbs'
+    end
+
+    specify "finding an explicit controllerName" do
+      touch_file 'app/controllers/some/example.js'
+      edit_file 'app/routes/example.js', <<-EOF
+        export default Ember.Route.extend({
+          controllerName: 'some/example'
+        });
+      EOF
+      vim.search 'controllerName'
+
+      vim.normal 'gf'
+
+      expect(current_file).to eq 'app/controllers/some/example.js'
+    end
+
+    describe "finding an injected service" do
       before :each do
         touch_file 'app/services/example-service.js'
         edit_file 'app/routes/example-route.js', <<-EOF
@@ -210,10 +378,37 @@ describe "gf mapping" do
         expect(current_file).to eq 'app/services/example-service.js'
       end
 
-      it "finds a service from its inject() line" do
+      it "finds a service from its getter" do
         vim.search 'this.get(\'\zsexampleService.'
         vim.normal 'gf'
         expect(current_file).to eq 'app/services/example-service.js'
+      end
+    end
+
+    describe "finding an injected controller" do
+      before :each do
+        touch_file 'app/controllers/example.js'
+        edit_file 'app/controllers/other.js', <<-EOF
+          export default Ember.Controller.extend({
+            exampleController: Ember.inject.controller('example')
+          });
+
+          beforeModel: function() {
+            this.get('exampleController.exampleProperty').doSomething();
+          }
+        EOF
+      end
+
+      it "finds a controller from its inject() line" do
+        vim.search 'exampleController: Ember.inject.controller'
+        vim.normal 'gf'
+        expect(current_file).to eq 'app/controllers/example.js'
+      end
+
+      it "finds a controller from its getter" do
+        vim.search 'this.get(\'\zsexampleController.'
+        vim.normal 'gf'
+        expect(current_file).to eq 'app/controllers/example.js'
       end
     end
 

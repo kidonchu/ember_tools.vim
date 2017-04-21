@@ -35,7 +35,7 @@ function! ember_tools#gf#TransitionRoute()
     return ''
   endif
 
-  if !ember_tools#search#UnderCursor('transitionTo\%(Route\)\=[( ][''"]\zs\k\+[''"]')
+  if !ember_tools#search#UnderCursor('\%(this\.\|@\)transitionTo\%(Route\)\=[( ][''"]\zs\k\+[''"]')
     return ''
   endif
 
@@ -45,12 +45,24 @@ function! ember_tools#gf#TransitionRoute()
   return s:FindRoute(join(route_path, '/'))
 endfunction
 
+function! ember_tools#gf#RenderCall()
+  if !ember_tools#IsLogicFiletype()
+    return ''
+  endif
+
+  if !ember_tools#search#UnderCursor('\%(this\.\|@\)render[( ][''"]\zs\k\+[''"]')
+    return ''
+  endif
+
+  return ember_tools#ExistingTemplateFile('app/templates/'.expand('<cfile>'))
+endfunction
+
 function! ember_tools#gf#Controller()
   if !ember_tools#IsLogicFiletype()
     return ''
   endif
 
-  if !ember_tools#search#UnderCursor('controllerFor[( ][''"]\zs\k\+[''"]')
+  if !ember_tools#search#UnderCursor('\%(this\.\|@\)controllerFor[( ][''"]\zs\k\+[''"]')
     return ''
   endif
 
@@ -60,30 +72,30 @@ function! ember_tools#gf#Controller()
   return s:FindController(join(controller_path, '/'))
 endfunction
 
-function! ember_tools#gf#ServiceInjection()
+function! ember_tools#gf#Injection()
   if !ember_tools#IsLogicFiletype()
     return ''
   endif
 
-  if !ember_tools#search#UnderCursor('^\s*\zs\k\+:\s*Ember\.inject\.service()')
+  if !ember_tools#search#UnderCursor('^\s*\k\+:\s*\%(Ember\.\)\=\%(inject\.\)\=\(service\|controller\)(')
     return ''
   endif
 
   let property = expand('<cword>')
-  return s:FindService(property)
+  return s:FindInjection(property)
 endfunction
 
-function! ember_tools#gf#ServiceProperty()
+function! ember_tools#gf#InjectedProperty()
   if !ember_tools#IsLogicFiletype()
     return ''
   endif
 
-  if !ember_tools#search#UnderCursor('get[( ][''"]\zs\k\+[''"]')
+  if !ember_tools#search#UnderCursor('\%(this\.\|@\)get[( ][''"]\zs\k\+[''"]')
     return ''
   endif
 
   let property = expand('<cword>')
-  return s:FindService(property)
+  return s:FindInjection(property)
 endfunction
 
 function! ember_tools#gf#Model()
@@ -113,7 +125,7 @@ function! ember_tools#gf#TemplateComponent()
     return ''
   endif
 
-  if !ember_tools#search#UnderCursor('^\s*\%(=\|{{\)\{}\s*\zs\k\+')
+  if !ember_tools#search#UnderCursor('^\s*\%(=\|{{#\|{{\)\{}\s*\zs\k\+')
     return ''
   endif
 
@@ -130,6 +142,19 @@ function! ember_tools#gf#TemplateComponent()
   return component_file
 endfunction
 
+function! ember_tools#gf#TemplatePartial()
+  if !ember_tools#IsTemplateFiletype()
+    return ''
+  endif
+
+  if !ember_tools#search#UnderCursor('^\s*{{\s*partial\s*["'']\zs\k\+["'']')
+    return ''
+  endif
+
+  let partial_name = expand('<cword>')
+  return ember_tools#ExistingTemplateFile('app/templates/'.partial_name)
+endfunction
+
 function! ember_tools#gf#Import()
   if !ember_tools#IsLogicFiletype()
     return ''
@@ -138,15 +163,34 @@ function! ember_tools#gf#Import()
   let current_file     = expand('%')
   let current_file_dir = expand('%:h')
 
-  if current_file =~ '^.'
+  if exists('*json_decode') && filereadable('package.json')
+    let package_json = json_decode(join(readfile('package.json'), "\n"))
+  else
+    let package_json = {}
+  endif
+
+  let real_path = ''
+
+  if package_json != {} &&
+        \ has_key(package_json, 'name') &&
+        \ expand('<cfile>') =~ '^'.package_json.name.'/'
+    " the import starts with the app name
+    let real_path = substitute(expand('<cfile>'), '^'.package_json.name.'/', 'app/', '')
+  elseif current_file =~ '^.'
     exe 'cd '.current_file_dir
     let absolute_path = expand('<cfile>:p')
     cd -
-    let files = s:Glob(fnamemodify(absolute_path.'.*', ':.'))
+    let real_path = fnamemodify(absolute_path, ':.')
+  endif
 
-    if len(files) > 0
-      return files[0]
-    endif
+  if real_path == ''
+    return ''
+  endif
+
+  let files = s:Glob(real_path.'.*')
+
+  if len(files) > 0
+    return files[0]
   endif
 
   return ''
@@ -183,16 +227,114 @@ function! ember_tools#gf#Action()
   endif
 endfunction
 
-function! s:FindService(property)
-  let property = a:property
-  let service_name = split(property, '\.')[0]
-  let dasherized_service_name = ember_tools#util#Dasherize(service_name)
-
-  if search('^\s*'.service_name.':\s*\%(Ember\.\)\=\%(inject\.\)\=service()', 'bcWn')
-    return ember_tools#ExistingLogicFile('app/services/'.dasherized_service_name)
-  else
+function! ember_tools#gf#Property()
+  if !ember_tools#IsTemplateFiletype()
     return ''
   endif
+
+  let current_file = expand('%:.')
+  let property_name = expand('<cword>')
+
+  if s:IsComponentTemplate(current_file)
+    let component_name = s:ExtractComponentName(current_file)
+    let result = s:FindComponentLogic(component_name)
+  elseif s:IsTemplate(current_file)
+    let controller_name = s:ExtractControllerName(current_file)
+    let result = s:FindController(controller_name)
+  else
+    let result = ''
+  endif
+
+  if result == ''
+    " no file was found, try something else
+    return ''
+  endif
+
+  let property_pattern = '^\s*\zs'.property_name.':'
+  let property_found_in_file = 0
+
+  " Check if the property really is that file
+  for line in readfile(result)
+    if line =~ property_pattern
+      let property_found_in_file = 1
+      break
+    endif
+  endfor
+
+  if !property_found_in_file
+    " we should try something else
+    return ''
+  endif
+
+  call ember_tools#SetFileOpenCallback(result, property_pattern)
+  return result
+endfunction
+
+function! ember_tools#gf#ExplicitTemplateName()
+  if !ember_tools#IsLogicFiletype()
+    return ''
+  endif
+
+  if ember_tools#search#UnderCursor('\%(layoutName\|templateName\):\s\+["'']\zs\f\+["'']') <= 0
+    return ''
+  endif
+
+  return ember_tools#ExistingTemplateFile('app/templates/'.expand('<cfile>'))
+endfunction
+
+function! ember_tools#gf#ExplicitControllerName()
+  if !ember_tools#IsLogicFiletype()
+    return ''
+  endif
+
+  if ember_tools#search#UnderCursor('controllerName:\s\+["'']\zs\f\+["'']') <= 0
+    return ''
+  endif
+
+  return ember_tools#ExistingLogicFile('app/controllers/'.expand('<cfile>'))
+endfunction
+
+function! ember_tools#gf#ImportedVariable()
+  if !ember_tools#IsLogicFiletype()
+    return ''
+  endif
+
+  " Find a real word this time
+  set iskeyword-=.,-,/
+  let cword = expand('<cword>')
+  set iskeyword+=.,-,/
+
+  if search('^import\_s*'.cword.'\_s*from\_s*[''"]\zs\f\+[''"]', 'c') <= 0
+    return ''
+  endif
+
+  return ember_tools#gf#Import()
+endfunction
+
+function! s:FindInjection(property)
+  let property = a:property
+  let name = split(property, '\.')[0]
+  let injection_pattern = '^\s*'.name.':\s*\%(Ember\.\)\=\%(inject\.\)\=\(service\|controller\)('
+
+  if !search(injection_pattern, 'bcW')
+    return ''
+  endif
+
+  let injection_line = getline('.')
+  let injection_type = substitute(injection_line, injection_pattern.'.*$', '\1', '')
+
+  " Check if an explicit name has been given
+  let remainder_of_line = substitute(injection_line, injection_pattern, '', '')
+  let explicit_name_pattern = '[''"]\zs\k\+\ze[''"]'
+
+  if remainder_of_line =~ explicit_name_pattern
+    let explicit_name = matchstr(remainder_of_line, explicit_name_pattern)
+    let entity_name = ember_tools#util#Dasherize(explicit_name)
+  else
+    let entity_name = ember_tools#util#Dasherize(name)
+  endif
+
+  return ember_tools#ExistingLogicFile('app/'.injection_type.'s/'.entity_name)
 endfunction
 
 function! s:FindComponentLogic(component_name)
@@ -202,7 +344,10 @@ function! s:FindComponentLogic(component_name)
   let existing_file = ember_tools#ExistingLogicFile('app/components/'.a:component_name.'/component')
   if existing_file != '' | return existing_file | endif
 
-  let existing_file = ember_tools#ExistingTemplateFile('app/pods/'.a:component_name.'/component')
+  let existing_file = ember_tools#ExistingLogicFile('app/pods/'.a:component_name.'/component')
+  if existing_file != '' | return existing_file | endif
+
+  let existing_file = ember_tools#ExistingLogicFile('app/pods/components/'.a:component_name.'/component')
   if existing_file != '' | return existing_file | endif
 
   return ''
@@ -216,6 +361,9 @@ function! s:FindComponentTemplate(component_name)
   if existing_file != '' | return existing_file | endif
 
   let existing_file = ember_tools#ExistingTemplateFile('app/pods/'.a:component_name.'/template')
+  if existing_file != '' | return existing_file | endif
+
+  let existing_file = ember_tools#ExistingTemplateFile('app/pods/components/'.a:component_name.'/template')
   if existing_file != '' | return existing_file | endif
 
   return ''
